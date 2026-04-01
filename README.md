@@ -9,17 +9,58 @@ ARGUS is a multi-agent UX testing platform that simulates how different types of
 
 ---
 
-## Why ARGUS?
+## Quick Start
 
-Traditional UX tools like Hotjar, Maze, and axe-core are:
-- **Persona-blind** — they don't reason about *who* is using the interface
-- **Rule-based** — they check DOM rules, not visual experience
-- **Single-perspective** — one report, no disagreements
+### Prerequisites
 
-ARGUS is different:
-- **Visual reasoning** — agents analyze screenshots, not just DOM trees
-- **Multi-persona** — each agent has a distinct identity, goals, and pain points
-- **Conflict detection** — disagreements between agents surface real UX tensions
+- Python 3.11+
+- MongoDB (local or Atlas)
+- [Gemini API key](https://aistudio.google.com/apikey)
+
+### Setup
+
+```bash
+cd argus-py
+python -m venv .venv
+
+# Windows
+.venv\Scripts\activate
+
+# macOS/Linux
+source .venv/bin/activate
+
+pip install -r requirements.txt
+playwright install chromium
+
+cp .env.example .env
+# Edit .env — set GEMINI_API_KEY and MONGODB_URI
+```
+
+### Run
+
+```bash
+uvicorn app.main:app --reload --port 8000
+```
+
+### Analyze a URL
+
+```bash
+curl -X POST http://localhost:8000/api/analyze \
+  -H "Content-Type: application/json" \
+  -d '{"url": "https://stripe.com", "viewport": "desktop"}'
+```
+
+Poll for results:
+
+```bash
+curl http://localhost:8000/api/reports/{reportId}
+```
+
+List all reports:
+
+```bash
+curl http://localhost:8000/api/reports
+```
 
 ---
 
@@ -29,20 +70,23 @@ ARGUS is different:
 User submits URL
        │
        ▼
-Playwright captures screenshots + DOM extraction
+Playwright captures screenshots + DOM extraction + SoM labeling
        │
        ▼
 6-stage async pipeline (FastAPI + asyncio)
+  1. DOM extraction (bounding boxes + computed styles + sections)
+  2. Set-of-Mark screenshot generation
+  3. Parallel persona agents (asyncio.gather × 4)
+  4. DOM-backed claim verification
+  5. Conflict detection (deterministic + semantic)
+  6. Report assembly + MongoDB persistence
        │
        ▼
-4 persona agents run in parallel (asyncio.gather)
-  ├── 👴 60-year-old non-technical user
-  ├── 👨‍💻 22-year-old developer
-  ├── ♿ Visually impaired user
-  └── 🧭 First-time visitor
-       │
-       ▼
-Vision analysis (Gemini) + conflict detection
+4 persona agents run in parallel
+  ├── 👴 Maya — 62-year-old non-technical user
+  ├── 👨‍💻 Dev — 24-year-old developer
+  ├── 🧭 Arjun — first-time visitor
+  └── ♿ Priya — visually impaired user
        │
        ▼
 Verified, structured UX report with conflict highlights
@@ -50,30 +94,53 @@ Verified, structured UX report with conflict highlights
 
 ---
 
-## Key Features
+## API Endpoints
 
-- **Multi-Agent Architecture** — each persona is a proper agent with its own identity, heuristics, reasoning trace, and structured output schema
-- **Visual Reasoning** — agents reason over actual screenshots via the Gemini vision API, complemented by DOM extraction
-- **Conflict Detection** — the system flags where personas disagree, surfacing real UX trade-offs
-- **Structured Reports** — every agent produces a validated `PersonaAnalysis` Pydantic model; the orchestrator builds the final report from these
-- **Parallel Execution** — all persona agents run concurrently via `asyncio.gather` for fast turnaround
-- **Full Observability** — structured logging with per-job trace IDs and configurable timeout handling across every pipeline stage
+| Method | Route | Description |
+|--------|-------|-------------|
+| `POST` | `/api/analyze` | Start async analysis (`{ url, viewport?, personaIds? }`) |
+| `GET` | `/api/reports/:id` | Get report by ID |
+| `GET` | `/api/reports` | List all reports |
+| `GET` | `/health` | Health check |
+| `GET` | `/screenshots/*` | Static screenshot artifacts |
+
+---
+
+## Project Structure
+
+```
+app/
+├── main.py              # FastAPI application
+├── config.py            # Pydantic settings
+├── logging_config.py    # Structured logging with trace IDs
+├── crawler/             # Playwright capture, DOM extraction, SoM
+├── ai/                  # Gemini vision + text with tenacity retries
+├── agents/              # Persona definitions + analyzer
+├── aggregator/          # Conflict detection, verifier, report builder
+├── pipeline/            # 6-stage async orchestrator
+├── db/                  # MongoDB persistence (motor)
+└── routes/              # REST API
+```
+
+---
+
+## Environment Variables
+
+| Variable | Required | Default | Description |
+|----------|----------|---------|-------------|
+| `GEMINI_API_KEY` | Yes | — | Google Gemini API key |
+| `MONGODB_URI` | No | `mongodb://localhost:27017` | MongoDB connection string |
+| `MONGODB_DATABASE` | No | `argus` | Database name |
+| `PORT` | No | `8000` | Server port |
+| `PIPELINE_TIMEOUT_SECONDS` | No | `600` | Max pipeline duration |
+| `GEMINI_MODEL` | No | `gemini-2.5-flash` | Gemini model |
+| `MIN_GEMINI_CALL_DELAY_SECONDS` | No | `20` | Rate-limit spacing between calls |
 
 ---
 
 ## Technical Highlights
 
-AI-native UX testing pipeline that orchestrates multi-agent web interface evaluation via async Python.
-
-- **Async FastAPI orchestration** — built an async FastAPI service that coordinates 4 parallel AI agents via `asyncio.gather` across a 6-stage pipeline: DOM extraction, vision analysis, conflict detection, and verified reporting
-- **Resilient Gemini integration** — integrated the Gemini vision API with tenacity-based retry logic, distinguishing rate-limit (429) from auth (401) and server (5xx) failures with per-error fallback routing
-- **Typed interfaces throughout** — enforced Pydantic models for all agent request/response schemas, enabling clean provider abstraction and extensibility across AI backends
-- **Production observability** — added structured logging with per-job trace IDs and configurable timeout handling, making the async pipeline fully observable across all stages in production
-
----
-
-## Example Insight
-
-> *"Expert users find the navigation intuitive, but first-time elderly users struggle to locate the primary call-to-action button."*
-
-This kind of cross-persona conflict is invisible to traditional tools. ARGUS surfaces it automatically.
+- **Async FastAPI orchestration** — coordinates 4 parallel AI agents via `asyncio.gather` across a 6-stage pipeline
+- **Resilient Gemini integration** — tenacity-based retry logic distinguishing rate-limit (429), auth (401), and server (5xx) failures
+- **Typed interfaces** — Pydantic models for all agent request/response schemas
+- **Production observability** — structured logging with per-job trace IDs and configurable timeout handling
