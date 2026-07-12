@@ -10,3 +10,7 @@ build/
 .pytest_cache/
 .mypy_cache/
 new.md
+data/
+frontend/node_modules/
+frontend/dist/
+explain.md
