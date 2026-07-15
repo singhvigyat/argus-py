@@ -1,15 +1,15 @@
 from datetime import datetime
-from enum import Enum
 from typing import Literal
 
-from pydantic import BaseModel, Field, HttpUrl
+from pydantic import BaseModel, Field
 
 
 Viewport = Literal["desktop", "tablet", "mobile"]
-ReportStatus = Literal["pending", "processing", "complete", "failed"]
+JobStatus = Literal["pending", "processing", "complete", "error"]
 Severity = Literal["low", "medium", "high", "critical"]
 ConflictType = Literal["severity_disagreement", "persona_opposition", "semantic_conflict"]
 Verdict = Literal["verified", "unverified", "element_not_found"]
+IssueVerdict = Literal["verified", "unverified"]
 
 
 class DOMElement(BaseModel):
@@ -58,7 +58,7 @@ class Persona(BaseModel):
 
 
 class IssueVerification(BaseModel):
-    verdict: Verdict
+    verdict: IssueVerdict
     evidence: str = ""
     note: str = ""
 
@@ -129,41 +129,67 @@ class Artifacts(BaseModel):
     domStructure: str = ""
 
 
-class ReportSummary(BaseModel):
-    overallScore: float = 0.0
-    totalIssues: int = 0
-    criticalIssues: int = 0
-    verifiedIssues: int = 0
-    totalConflicts: int = 0
-    topSection: str = "unknown"
-
-
 class UXReport(BaseModel):
-    id: str
+    jobId: str
     url: str
-    status: ReportStatus = "pending"
-    createdAt: datetime = Field(default_factory=datetime.utcnow)
-    completedAt: datetime | None = None
-    viewport: Viewport = "desktop"
-    summary: ReportSummary = Field(default_factory=ReportSummary)
-    personaAnalyses: list[PersonaAnalysis] = Field(default_factory=list)
-    conflicts: list[Conflict] = Field(default_factory=list)
-    conflictReport: ConflictReport = Field(default_factory=ConflictReport)
-    verificationResults: list[VerificationResult] = Field(default_factory=list)
-    verificationSummary: VerificationSummary = Field(default_factory=VerificationSummary)
-    artifacts: Artifacts = Field(default_factory=Artifacts)
+    status: JobStatus = "pending"
     screenshots: ScreenshotSet = Field(default_factory=ScreenshotSet)
     selectedPersonas: list[str] = Field(default_factory=list)
-    analysisTimeMs: int = 0
+    personaInsights: list[PersonaAnalysis] = Field(default_factory=list)
+    conflicts: list[Conflict] = Field(default_factory=list)
+    conflictReport: ConflictReport = Field(default_factory=ConflictReport)
+    summary: str = ""
+    majorIssues: list[str] = Field(default_factory=list)
+    recommendations: list[str] = Field(default_factory=list)
+    verificationResults: list[VerificationResult] = Field(default_factory=list)
+    verificationSummary: VerificationSummary = Field(default_factory=VerificationSummary)
+    severityScore: float = 0.0
+    analysisTime: int = 0
     error: str | None = None
+    createdAt: datetime = Field(default_factory=datetime.utcnow)
+    completedAt: datetime | None = None
+    artifacts: Artifacts = Field(default_factory=Artifacts)
+    viewport: Viewport = "desktop"
+    ownerId: str | None = None
 
 
 class AnalyzeRequest(BaseModel):
     url: str
-    viewport: Viewport = "desktop"
     personaIds: list[str] | None = None
+    viewport: Viewport = "desktop"
+
+
+class QuotaSnapshot(BaseModel):
+    used: int
+    limit: int
+    remaining: int
+    resetAt: str
 
 
 class AnalyzeResponse(BaseModel):
-    reportId: str
-    message: str = "Analysis started. Poll GET /api/reports/{id} for results."
+    jobId: str
+    message: str = "Analysis started. Poll GET /api/analyze/{jobId} for results."
+    quota: QuotaSnapshot | None = None
+
+
+class AuthUser(BaseModel):
+    id: str
+    email: str
+    name: str
+    picture: str = ""
+
+
+class AuthConfig(BaseModel):
+    googleClientId: str
+    configured: bool
+    dailyLimit: int
+    globalDailyLimit: int
+
+
+class AuthResponse(BaseModel):
+    user: AuthUser
+    quota: QuotaSnapshot
+
+
+class GoogleLoginRequest(BaseModel):
+    credential: str
