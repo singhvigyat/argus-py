@@ -14,6 +14,7 @@ from tenacity import (
     wait_exponential,
 )
 
+from app.ai.provider import VisionProvider
 from app.config import get_settings
 from app.logging_config import get_logger
 
@@ -30,24 +31,43 @@ class GeminiErrorKind(str, Enum):
     OTHER = "other"
 
 
-def _classify_error(exc: Exception) -> GeminiErrorKind:
-    status = getattr(exc, "status_code", None) or getattr(exc, "code", None)
+def _status_code(exc: Exception) -> int | None:
+    for attr in ("status_code", "code", "status"):
+        value = getattr(exc, attr, None)
+        if isinstance(value, int):
+            return value
+        if isinstance(value, str) and value.isdigit():
+            return int(value)
+    response = getattr(exc, "response", None)
+    if response is not None:
+        code = getattr(response, "status_code", None)
+        if isinstance(code, int):
+            return code
+    return None
+
+
+def classify_error(exc: Exception) -> GeminiErrorKind:
+    status = _status_code(exc)
     message = str(exc).lower()
 
-    if status == 401 or "unauthorized" in message or "invalid api key" in message:
+    if status == 401 or "unauthorized" in message or "invalid api key" in message or "unauthenticated" in message:
         return GeminiErrorKind.AUTH
     if status == 429 or "resource_exhausted" in message or "429" in message or "quota" in message:
         return GeminiErrorKind.RATE_LIMIT
-    if status and int(status) >= 500:
+    if (
+        isinstance(exc, TimeoutError)
+        or isinstance(exc, genai_errors.ServerError)
+        or (status is not None and status >= 500)
+        or "timed out" in message
+    ):
         return GeminiErrorKind.SERVER
-    if "internal" in message or "unavailable" in message or "503" in message:
+    if "internal" in message or "unavailable" in message or "503" in message or "500" in message:
         return GeminiErrorKind.SERVER
     return GeminiErrorKind.OTHER
 
 
 def _is_retryable(exc: Exception) -> bool:
-    kind = _classify_error(exc)
-    return kind in (GeminiErrorKind.RATE_LIMIT, GeminiErrorKind.SERVER)
+    return classify_error(exc) in (GeminiErrorKind.RATE_LIMIT, GeminiErrorKind.SERVER)
 
 
 def _extract_retry_delay(exc: Exception) -> float:
@@ -94,36 +114,90 @@ def _sync_generate(client: genai.Client, model: str, contents: list) -> str:
 async def _call_with_retry(model: str, contents: list) -> str:
     await _enforce_call_spacing()
     client = _get_client()
+    settings = get_settings()
 
     try:
-        return await asyncio.to_thread(_sync_generate, client, model, contents)
-    except genai_errors.ClientError as exc:
-        kind = _classify_error(exc)
+        return await asyncio.wait_for(
+            asyncio.to_thread(_sync_generate, client, model, contents),
+            timeout=settings.gemini_timeout_seconds,
+        )
+    except TimeoutError:
+        logger.warning("Gemini call timed out after %.0fs (model=%s)", settings.gemini_timeout_seconds, model)
+        raise
+    except Exception as exc:
+        kind = classify_error(exc)
         if kind == GeminiErrorKind.AUTH:
             logger.error("Gemini auth failure (401) — check GEMINI_API_KEY")
             raise RuntimeError("Gemini authentication failed. Check GEMINI_API_KEY.") from exc
         if kind == GeminiErrorKind.RATE_LIMIT:
             delay = _extract_retry_delay(exc)
-            logger.warning("Gemini rate limit (429) — backing off %.1fs", delay)
+            logger.warning("Gemini rate limit (429) — backing off %.1fs before retry", delay)
             await asyncio.sleep(delay)
+            raise
+        if kind == GeminiErrorKind.SERVER:
+            logger.warning("Gemini server error (5xx) on %s: %s", model, exc)
+            raise
+        logger.error("Gemini non-retryable error: %s", exc)
         raise
 
 
-async def analyze_image_with_gemini(image_bytes: bytes, prompt: str) -> str:
+async def _call_with_fallback(contents: list) -> str:
     settings = get_settings()
-    contents: list = [
-        types.Part.from_bytes(data=image_bytes, mime_type="image/png"),
-        prompt,
-    ]
+    primary = settings.gemini_model
+    fallback = settings.gemini_fallback_model
+
     try:
-        return await _call_with_retry(settings.gemini_model, contents)
+        return await _call_with_retry(primary, contents)
     except RetryError as exc:
-        raise RuntimeError(f"Gemini vision call failed after retries: {exc.last_attempt.exception()}") from exc
+        inner = exc.last_attempt.exception() or exc
+        kind = classify_error(inner) if inner else GeminiErrorKind.OTHER
+        if kind == GeminiErrorKind.SERVER and fallback and fallback != primary:
+            logger.warning("Primary model %s exhausted 5xx retries — falling back to %s", primary, fallback)
+            try:
+                return await _call_with_retry(fallback, contents)
+            except RetryError as fallback_exc:
+                raise RuntimeError(
+                    f"Gemini call failed after retries on {primary} and {fallback}: "
+                    f"{fallback_exc.last_attempt.exception()}"
+                ) from fallback_exc
+        raise RuntimeError(f"Gemini call failed after retries: {inner}") from exc
+    except RuntimeError:
+        raise
+    except Exception as exc:
+        kind = classify_error(exc)
+        if kind == GeminiErrorKind.SERVER and fallback and fallback != primary:
+            logger.warning("Primary model %s hit 5xx — falling back to %s", primary, fallback)
+            return await _call_with_retry(fallback, contents)
+        raise
+
+
+class GeminiProvider:
+    """Gemini vision/text backend with classified retries and model fallback."""
+
+    async def analyze_image(self, image_bytes: bytes, prompt: str) -> str:
+        contents: list = [
+            types.Part.from_bytes(data=image_bytes, mime_type="image/png"),
+            prompt,
+        ]
+        return await _call_with_fallback(contents)
+
+    async def analyze_text(self, prompt: str) -> str:
+        return await _call_with_fallback([prompt])
+
+
+_provider: VisionProvider | None = None
+
+
+def get_vision_provider() -> VisionProvider:
+    global _provider
+    if _provider is None:
+        _provider = GeminiProvider()
+    return _provider
+
+
+async def analyze_image_with_gemini(image_bytes: bytes, prompt: str) -> str:
+    return await get_vision_provider().analyze_image(image_bytes, prompt)
 
 
 async def analyze_text_with_gemini(prompt: str) -> str:
-    settings = get_settings()
-    try:
-        return await _call_with_retry(settings.gemini_model, [prompt])
-    except RetryError as exc:
-        raise RuntimeError(f"Gemini text call failed after retries: {exc.last_attempt.exception()}") from exc
+    return await get_vision_provider().analyze_text(prompt)
