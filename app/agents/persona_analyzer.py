@@ -144,14 +144,22 @@ async def run_persona_agent(
             continue
 
         logger.info("[%s] Analysis succeeded on attempt %d", persona.name, attempt)
+        score = float(parsed.get("overallScore", 5))
+        score = min(10.0, max(1.0, score))
+        try:
+            issues = [UXIssue.model_validate(i) for i in parsed.get("issues") or []]
+        except Exception as exc:
+            validation_errors = f"Issue schema invalid: {exc}"
+            logger.warning("[%s] Schema validation failed on attempt %d: %s", persona.name, attempt, exc)
+            continue
         return PersonaAnalysis(
             personaId=persona.id,
             personaName=persona.name,
             viewport=viewport,
             reasoning=parsed.get("reasoning") or "Reasoning missing.",
-            issues=[UXIssue.model_validate(i) for i in parsed.get("issues") or []],
+            issues=issues,
             positives=parsed.get("positives") or [],
-            overallScore=float(parsed.get("overallScore", 5)),
+            overallScore=score,
         )
 
     logger.error("[%s] Failed after %d retries", persona.name, max_retries)
