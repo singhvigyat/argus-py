@@ -1,7 +1,8 @@
+import asyncio
 import json
 from pathlib import Path
 
-from playwright.async_api import Browser, Page, async_playwright
+from playwright.sync_api import Browser, Page, sync_playwright
 
 from app.config import get_settings
 from app.crawler.dom_script import DOM_EXTRACTION_SCRIPT
@@ -39,19 +40,19 @@ VIEWPORTS: dict[Viewport, dict[str, int | str]] = {
 }
 
 
-async def _navigate_safely(page: Page, url: str) -> None:
+def _navigate_safely(page: Page, url: str) -> None:
     try:
-        await page.goto(url, wait_until="networkidle", timeout=30_000)
+        page.goto(url, wait_until="networkidle", timeout=30_000)
     except Exception:
         try:
-            await page.goto(url, wait_until="domcontentloaded", timeout=20_000)
-            await page.wait_for_timeout(2000)
+            page.goto(url, wait_until="domcontentloaded", timeout=20_000)
+            page.wait_for_timeout(2000)
         except Exception as exc:
             raise RuntimeError(f"Failed to load URL: {url}. {exc}") from exc
 
 
-async def _extract_dom(page: Page) -> list[DOMElement]:
-    raw = await page.evaluate(DOM_EXTRACTION_SCRIPT)
+def _extract_dom(page: Page) -> list[DOMElement]:
+    raw = page.evaluate(DOM_EXTRACTION_SCRIPT)
     return [DOMElement.model_validate(item) for item in raw]
 
 
@@ -72,25 +73,25 @@ def _write_json(path: Path, data: dict | list) -> None:
     path.write_text(json.dumps(data, indent=2), encoding="utf-8")
 
 
-async def _capture_viewport(
+def _capture_viewport(
     browser: Browser,
     url: str,
     viewport: Viewport,
     job_dir: Path,
 ) -> None:
     cfg = VIEWPORTS[viewport]
-    context = await browser.new_context(
+    context = browser.new_context(
         viewport={"width": int(cfg["width"]), "height": int(cfg["height"])},
         user_agent=str(cfg["user_agent"]),
     )
-    page = await context.new_page()
+    page = context.new_page()
     try:
-        await _navigate_safely(page, url)
-        elements = await _extract_dom(page)
+        _navigate_safely(page, url)
+        elements = _extract_dom(page)
         logger.info("Extracted %d DOM elements for %s", len(elements), viewport)
 
         screenshot_path = job_dir / f"{viewport}.png"
-        await page.screenshot(path=str(screenshot_path), type="png")
+        page.screenshot(path=str(screenshot_path), type="png")
 
         dom_data = {"viewport": viewport, "width": cfg["width"], "elements": [e.model_dump() for e in elements]}
         _write_json(job_dir / f"dom-{viewport}.json", dom_data)
@@ -104,24 +105,24 @@ async def _capture_viewport(
             job_dir / f"som-{viewport}.png",
         )
     finally:
-        await context.close()
+        context.close()
 
 
-async def capture_screenshots(url: str, job_id: str) -> tuple[ScreenshotSet, Path]:
+def _capture_screenshots_sync(url: str, job_id: str) -> tuple[ScreenshotSet, str]:
     settings = get_settings()
     job_dir = Path(settings.screenshots_dir) / job_id
     job_dir.mkdir(parents=True, exist_ok=True)
 
-    async with async_playwright() as pw:
-        browser = await pw.chromium.launch(
+    with sync_playwright() as pw:
+        browser = pw.chromium.launch(
             headless=True,
             args=["--no-sandbox", "--disable-setuid-sandbox", "--disable-dev-shm-usage"],
         )
         try:
             for viewport in ("desktop", "tablet", "mobile"):
-                await _capture_viewport(browser, url, viewport, job_dir)
+                _capture_viewport(browser, url, viewport, job_dir)
         finally:
-            await browser.close()
+            browser.close()
 
     return (
         ScreenshotSet(
@@ -129,8 +130,15 @@ async def capture_screenshots(url: str, job_id: str) -> tuple[ScreenshotSet, Pat
             tablet=f"/screenshots/{job_id}/tablet.png",
             mobile=f"/screenshots/{job_id}/mobile.png",
         ),
-        job_dir,
+        str(job_dir),
     )
+
+
+async def capture_screenshots(url: str, job_id: str) -> tuple[ScreenshotSet, Path]:
+    # Sync Playwright in a thread — uvicorn on Windows uses SelectorEventLoop,
+    # which cannot spawn subprocesses (Playwright async API raises NotImplementedError).
+    screenshots, job_dir = await asyncio.to_thread(_capture_screenshots_sync, url, job_id)
+    return screenshots, Path(job_dir)
 
 
 def load_ui_structure(job_dir: Path, viewport: Viewport) -> UIStructure:
