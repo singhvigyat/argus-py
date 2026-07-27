@@ -1,4 +1,3 @@
-from collections import Counter
 from datetime import datetime
 
 from app.aggregator.conflict_detector import detect_conflicts
@@ -9,9 +8,7 @@ from app.models.schemas import (
     ConflictReport,
     IssueVerification,
     PersonaAnalysis,
-    ReportSummary,
     ScreenshotSet,
-    UIStructure,
     UXReport,
     VerificationResult,
     VerificationSummary,
@@ -21,7 +18,7 @@ from app.models.schemas import (
 logger = get_logger(__name__)
 
 
-def _attach_verification(
+def attach_verification(
     analyses: list[PersonaAnalysis],
     verification_results: list[VerificationResult],
 ) -> tuple[list[PersonaAnalysis], VerificationSummary]:
@@ -45,7 +42,7 @@ def _attach_verification(
                 issue = issue.model_copy(
                     update={
                         "verification": IssueVerification(
-                            verdict=verification.verdict,
+                            verdict=verification.verdict if verification.verdict != "element_not_found" else "unverified",
                             evidence=verification.evidence,
                             note=verification.note,
                         )
@@ -92,61 +89,69 @@ def _attach_verification(
     return sanitized, summary
 
 
-async def assemble_report(
-    report_id: str,
+def extract_major_issues(analyses: list[PersonaAnalysis], limit: int = 8) -> list[str]:
+    issues: list[str] = []
+    for analysis in analyses:
+        for issue in analysis.issues:
+            issues.append(f"[{analysis.personaName}] {issue.observation}")
+            if len(issues) >= limit:
+                return issues
+    return issues
+
+
+def compute_severity_score(analyses: list[PersonaAnalysis]) -> float:
+    if not analyses:
+        return 0.0
+    return round(sum(a.overallScore for a in analyses) / len(analyses), 1)
+
+
+def assemble_report(
+    job_id: str,
     url: str,
     viewport: Viewport,
     analyses: list[PersonaAnalysis],
-    ui_structure: UIStructure,
     screenshots: ScreenshotSet,
     artifacts: Artifacts,
     analysis_time_ms: int,
     selected_personas: list[str],
+    verification_results: list[VerificationResult],
+    verification_summary: VerificationSummary,
+    conflict_report: ConflictReport,
 ) -> UXReport:
-    verification_results = verify_issues(analyses, ui_structure)
-    sanitized, verification_summary = _attach_verification(analyses, verification_results)
-    conflict_report = await detect_conflicts(sanitized)
-
-    all_issues = [issue for a in sanitized for issue in a.issues]
-    verified_ids = {
-        r.issueElementId
-        for r in verification_results
-        if r.verdict == "verified"
-    }
-    section_counts = Counter(issue.section for issue in all_issues)
-    top_section = section_counts.most_common(1)[0][0] if section_counts else "unknown"
-    avg_score = sum(a.overallScore for a in sanitized) / len(sanitized) if sanitized else 0.0
-
     return UXReport(
-        id=report_id,
+        jobId=job_id,
         url=url,
         status="complete",
         createdAt=datetime.utcnow(),
         completedAt=datetime.utcnow(),
         viewport=viewport,
-        summary=ReportSummary(
-            overallScore=round(avg_score, 1),
-            totalIssues=len(all_issues),
-            criticalIssues=sum(1 for i in all_issues if i.severity == "critical"),
-            verifiedIssues=sum(1 for i in all_issues if i.elementId in verified_ids),
-            totalConflicts=conflict_report.totalConflicts,
-            topSection=top_section,
-        ),
-        personaAnalyses=sanitized,
-        conflicts=conflict_report.conflicts,
-        conflictReport=conflict_report,
-        verificationResults=verification_results,
-        verificationSummary=verification_summary,
-        artifacts=artifacts,
         screenshots=screenshots,
         selectedPersonas=selected_personas,
-        analysisTimeMs=analysis_time_ms,
+        personaInsights=analyses,
+        conflicts=conflict_report.conflicts,
+        conflictReport=conflict_report,
+        summary=(
+            f"Generated analysis across {len(analyses)} personas and found "
+            f"{conflict_report.totalConflicts} cross-persona conflicts."
+        ),
+        majorIssues=extract_major_issues(analyses),
+        recommendations=[],
+        verificationResults=verification_results,
+        verificationSummary=verification_summary,
+        severityScore=compute_severity_score(analyses),
+        analysisTime=analysis_time_ms,
+        artifacts=artifacts,
     )
 
 
-def create_pending_report(report_id: str, url: str, viewport: Viewport, selected_personas: list[str]) -> UXReport:
+def create_pending_report(
+    job_id: str,
+    url: str,
+    viewport: Viewport,
+    selected_personas: list[str],
+) -> UXReport:
     return UXReport(
-        id=report_id,
+        jobId=job_id,
         url=url,
         status="pending",
         viewport=viewport,
