@@ -1,14 +1,14 @@
 from uuid import uuid4
 
-from fastapi import APIRouter, BackgroundTasks, Request
+from fastapi import APIRouter, BackgroundTasks, Query, Request
 
 from app.aggregator.report_builder import create_pending_report
 from app.auth.deps import require_user
 from app.auth.usage import try_start_job
-from app.db.jobs import get_job, get_owner, list_jobs, put_job
+from app.db.jobs import get_owned_job, list_jobs_for_user, put_job
 from app.errors import ApiError
 from app.logging_config import trace_id_var
-from app.models.schemas import AnalyzeRequest, AnalyzeResponse, UXReport
+from app.models.schemas import AnalyzeRequest, AnalyzeResponse, JobStatus, ReportListItem, UXReport
 from app.pipeline.orchestrator import normalize_url, run_pipeline
 
 router = APIRouter(tags=["analyze"])
@@ -31,7 +31,7 @@ async def start_analysis(
         raise ApiError(400, str(exc)) from exc
 
     job_id = str(uuid4())
-    ok, status, error, code, quota = try_start_job(user.id, job_id)
+    ok, status, error, code, quota = await try_start_job(user.id, job_id)
     if not ok:
         raise ApiError(status, error, code=code, quota=quota.model_dump())
 
@@ -59,18 +59,21 @@ async def start_analysis(
 @router.get("/api/analyze/{job_id}", response_model=UXReport, response_model_exclude={"ownerId"})
 async def get_analysis_status(job_id: str, request: Request) -> UXReport:
     user = require_user(request)
-    job = await get_job(job_id)
-    owner = get_owner(job_id)
-    if not job or owner != user.id:
+    job = await get_owned_job(job_id, user.id)
+    if not job:
         raise ApiError(404, "Job not found")
     return job
 
 
-@router.get("/api/reports", response_model=list[UXReport], response_model_exclude={"ownerId"})
-async def get_all_reports(request: Request) -> list[UXReport]:
+@router.get("/api/reports", response_model=list[ReportListItem])
+async def get_all_reports(
+    request: Request,
+    limit: int = Query(20, ge=1, le=50),
+    offset: int = Query(0, ge=0),
+    status: JobStatus | None = Query(None),
+) -> list[ReportListItem]:
     user = require_user(request)
-    jobs = await list_jobs()
-    return [job for job in jobs if get_owner(job.jobId) == user.id]
+    return await list_jobs_for_user(user.id, limit=limit, offset=offset, status=status)
 
 
 @router.get("/api/reports/{report_id}", response_model=UXReport, response_model_exclude={"ownerId"})

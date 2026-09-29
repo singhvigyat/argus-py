@@ -1,10 +1,17 @@
 from functools import lru_cache
+from pathlib import Path
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+BACKEND_ROOT = Path(__file__).resolve().parents[1]
+
 
 class Settings(BaseSettings):
-    model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
+    model_config = SettingsConfigDict(
+        env_file=BACKEND_ROOT / ".env",
+        env_file_encoding="utf-8",
+        extra="ignore",
+    )
 
     gemini_api_key: str = ""
     gemini_model: str = "gemini-2.5-flash"
@@ -14,6 +21,7 @@ class Settings(BaseSettings):
 
     mongodb_uri: str = ""
     mongodb_database: str = "argus"
+    stale_job_minutes: int = 20
 
     port: int = 8000
     pipeline_timeout_seconds: int = 600
@@ -26,6 +34,13 @@ class Settings(BaseSettings):
 
     daily_analysis_limit: int = 3
     global_daily_limit: int = 40
+
+    @property
+    def screenshots_path(self) -> Path:
+        path = Path(self.screenshots_dir)
+        if not path.is_absolute():
+            path = BACKEND_ROOT / path
+        return path
 
     @property
     def is_production(self) -> bool:

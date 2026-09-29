@@ -1,4 +1,4 @@
-import type { UXReport } from '../types';
+import type { JobStatus, UXReport } from '../types';
 
 const API_ROOT = (import.meta.env.VITE_API_URL as string | undefined)?.replace(/\/$/, '') ?? '';
 const API_BASE = `${API_ROOT}/api`;
@@ -110,5 +110,32 @@ export async function getAnalysisStatus(jobId: string): Promise<UXReport> {
     throw new Error(await parseError(res));
   }
 
+  return res.json();
+}
+
+export type ReportListItem = {
+  jobId: string;
+  url: string;
+  status: JobStatus;
+  severityScore: number;
+  createdAt: string;
+  completedAt?: string | null;
+  screenshot: string;
+};
+
+export async function listReports(params?: {
+  limit?: number;
+  offset?: number;
+  status?: JobStatus;
+}): Promise<ReportListItem[]> {
+  const query = new URLSearchParams();
+  if (params?.limit != null) query.set('limit', String(params.limit));
+  if (params?.offset != null) query.set('offset', String(params.offset));
+  if (params?.status) query.set('status', params.status);
+  const suffix = query.size ? `?${query.toString()}` : '';
+  const res = await request(`/reports${suffix}`);
+  if (!res.ok) {
+    throw new Error(await parseError(res));
+  }
   return res.json();
 }

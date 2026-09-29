@@ -14,3 +14,5 @@ data/
 frontend/node_modules/
 frontend/dist/
 explain.md
+
+DATABASE_STEPS.md

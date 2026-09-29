@@ -49,7 +49,7 @@ async def run_pipeline(
         await patch_job(job_id, status="error", error=message)
     finally:
         if user_id:
-            finish_job(user_id, job_id)
+            await finish_job(user_id, job_id)
 
 
 async def _run_stages(

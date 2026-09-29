@@ -153,6 +153,16 @@ class UXReport(BaseModel):
     ownerId: str | None = None
 
 
+class ReportListItem(BaseModel):
+    jobId: str
+    url: str
+    status: JobStatus
+    severityScore: float = 0.0
+    createdAt: datetime
+    completedAt: datetime | None = None
+    screenshot: str = ""
+
+
 class AnalyzeRequest(BaseModel):
     url: str
     personaIds: list[str] | None = None

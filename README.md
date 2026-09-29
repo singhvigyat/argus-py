@@ -22,7 +22,7 @@ Submit a URL. Four persona agents read the interface independently. The report s
 ### 1. Backend
 
 ```bash
-cd argus-py
+cd argus-py/backend
 python -m venv .venv
 
 # Windows
@@ -50,12 +50,20 @@ Run:
 uvicorn app.main:app --reload --port 8000
 ```
 
-MongoDB is optional. If `MONGODB_URI` is empty, jobs stay in memory.
+MongoDB stores users, login events, daily quotas, and reports. If `MONGODB_URI` is empty, the app still runs: quota stays in `data/usage.json` and jobs stay in memory.
+
+From the repo root:
+
+```bash
+docker compose up -d mongo
+```
+
+Set `MONGODB_URI=mongodb://127.0.0.1:27017` in `.env`. `/health` returns `db: "up"` when connected, `503` if the URI is set but Mongo is down.
 
 ### 2. Frontend
 
 ```bash
-cd frontend
+cd argus-py/frontend
 npm install
 npm run dev
 ```
@@ -106,6 +114,7 @@ Personas: Maya (elderly), Dev (engineer), Arjun (first visit), Priya (low vision
 |---|---|---|
 | `POST` | `/api/analyze` | Start analysis (`{ url, personaIds? }`). Needs Google session. |
 | `GET` | `/api/analyze/:jobId` | Poll job status + report |
+| `GET` | `/api/reports` | Signed-in user's readings (`limit`, `offset`, `status`) |
 | `GET` | `/api/auth/config` | Google client ID + quota limits |
 | `GET` | `/api/auth/me` | Current user + quota |
 | `POST` | `/api/auth/google` | `{ credential }` Google ID token |
@@ -125,19 +134,22 @@ Personas: Maya (elderly), Dev (engineer), Arjun (first visit), Priya (low vision
 
 ```
 argus-py/
-├── app/
-│   ├── main.py              # FastAPI app, CORS, cookies
-│   ├── config.py            # Pydantic settings
-│   ├── logging_config.py    # Structured logs with per-job trace IDs
-│   ├── crawler/             # Playwright capture, DOM extraction, SoM
-│   ├── ai/                  # VisionProvider + Gemini retries/fallback
-│   ├── agents/              # Persona definitions + analyzer
-│   ├── aggregator/          # Verifier, conflicts, report builder
-│   ├── pipeline/            # 6-stage async orchestrator
-│   ├── auth/                # Google ID token, JWT cookie, quotas
-│   ├── db/                  # In-memory jobs + optional MongoDB
-│   └── routes/              # /api/analyze, /api/auth
-└── frontend/                # React + Vite + Tailwind (copied as-is)
+├── backend/                 # FastAPI
+│   ├── app/
+│   │   ├── main.py          # FastAPI app, CORS, cookies
+│   │   ├── config.py        # Pydantic settings
+│   │   ├── logging_config.py
+│   │   ├── crawler/         # Playwright capture, DOM extraction, SoM
+│   │   ├── ai/              # VisionProvider + Gemini retries/fallback
+│   │   ├── agents/          # Persona definitions + analyzer
+│   │   ├── aggregator/      # Verifier, conflicts, report builder
+│   │   ├── pipeline/        # 6-stage async orchestrator
+│   │   ├── auth/            # Google ID token, JWT cookie, quotas
+│   │   ├── db/              # MongoDB users, logins, quota, reports
+│   │   └── routes/          # /api/analyze, /api/auth, /api/reports
+│   ├── requirements.txt
+│   └── .env.example
+└── frontend/                # React + Vite + Tailwind
 ```
 
 ---
@@ -157,7 +169,9 @@ argus-py/
 | `MIN_GEMINI_CALL_DELAY_SECONDS` | No | `20` | Spacing between Gemini calls |
 | `DAILY_ANALYSIS_LIMIT` | No | `3` | Per-account UTC daily cap |
 | `GLOBAL_DAILY_LIMIT` | No | `40` | Server-wide UTC daily cap |
-| `MONGODB_URI` | No | empty | Optional persistence |
+| `MONGODB_URI` | No | empty | MongoDB connection. Empty = memory + `usage.json` |
+| `MONGODB_DATABASE` | No | `argus` | Database name |
+| `STALE_JOB_MINUTES` | No | `20` | Pending/processing jobs older than this are marked error on boot |
 | `PORT` | No | `8000` | Backend port |
 | `VITE_API_URL` | Production | empty | Frontend: backend URL, no trailing slash |
 

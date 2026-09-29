@@ -110,7 +110,7 @@ def _capture_viewport(
 
 def _capture_screenshots_sync(url: str, job_id: str) -> tuple[ScreenshotSet, str]:
     settings = get_settings()
-    job_dir = Path(settings.screenshots_dir) / job_id
+    job_dir = settings.screenshots_path / job_id
     job_dir.mkdir(parents=True, exist_ok=True)
 
     with sync_playwright() as pw:

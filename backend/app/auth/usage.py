@@ -1,17 +1,19 @@
 import json
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
-from pathlib import Path
 from threading import Lock
 
-from app.config import get_settings
+from app.config import BACKEND_ROOT, get_settings
+from app.db.mongo import mongo_available
+from app.db.usage import finish_job as mongo_finish_job
+from app.db.usage import get_quota as mongo_get_quota
+from app.db.usage import try_start_job as mongo_try_start_job
 from app.logging_config import get_logger
 from app.models.schemas import QuotaSnapshot
 
 logger = get_logger(__name__)
 
-DATA_FILE = Path("data") / "usage.json"
-GLOBAL_KEY = "__global__"
+DATA_FILE = BACKEND_ROOT / "data" / "usage.json"
 _lock = Lock()
 
 
@@ -82,15 +84,14 @@ def get_limits() -> tuple[int, int]:
     return settings.daily_analysis_limit, settings.global_daily_limit
 
 
-def get_quota(user_id: str) -> QuotaSnapshot:
+def _file_get_quota(user_id: str) -> QuotaSnapshot:
     daily, _ = get_limits()
     with _lock:
         cache = _load()
         return _quota(_fresh(cache["users"].get(user_id)), daily)
 
 
-def try_start_job(user_id: str, job_id: str) -> tuple[bool, int, str, str | None, QuotaSnapshot]:
-    """Returns (ok, status, error, code, quota)."""
+def _file_try_start_job(user_id: str, job_id: str) -> tuple[bool, int, str, str | None, QuotaSnapshot]:
     daily, server = get_limits()
     with _lock:
         cache = _load()
@@ -134,7 +135,7 @@ def try_start_job(user_id: str, job_id: str) -> tuple[bool, int, str, str | None
         return True, 200, "", None, _quota(user, daily)
 
 
-def finish_job(user_id: str, job_id: str) -> None:
+def _file_finish_job(user_id: str, job_id: str) -> None:
     with _lock:
         cache = _load()
         user = _fresh(cache["users"].get(user_id))
@@ -146,3 +147,22 @@ def finish_job(user_id: str, job_id: str) -> None:
                 "activeJobId": None,
             }
             _save(cache)
+
+
+async def get_quota(user_id: str) -> QuotaSnapshot:
+    if mongo_available():
+        return await mongo_get_quota(user_id, next_reset_at())
+    return _file_get_quota(user_id)
+
+
+async def try_start_job(user_id: str, job_id: str) -> tuple[bool, int, str, str | None, QuotaSnapshot]:
+    if mongo_available():
+        return await mongo_try_start_job(user_id, job_id, next_reset_at())
+    return _file_try_start_job(user_id, job_id)
+
+
+async def finish_job(user_id: str, job_id: str) -> None:
+    if mongo_available():
+        await mongo_finish_job(user_id, job_id)
+        return
+    _file_finish_job(user_id, job_id)
